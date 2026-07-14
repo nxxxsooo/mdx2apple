@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<d:dictionary xmlns="http://www.w3.org/1999/xhtml" xmlns:d="http://www.apple.com/DTDs/DictionaryService-1.0.rng">
+<d:entry id="test_1" d:title="hello">
+<d:index d:value="hello" d:title="hello"/>
+<h1>hello</h1>
+<p>A greeting used when meeting someone.</p>
+<p>你好 - 问候语</p>
+</d:entry>
+<d:entry id="test_2" d:title="world">
+<d:index d:value="world" d:title="world"/>
+<h1>world</h1>
+<p>The earth and all the people on it.</p>
+<p>世界</p>
+</d:entry>
+</d:dictionary>
