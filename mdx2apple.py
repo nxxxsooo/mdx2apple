@@ -306,12 +306,17 @@ clean:
 
 
 def convert_mdx(mdx_path, output_dir):
-    """Convert MDX to AppleDict source using pyglossary."""
+    """Convert MDX to AppleDict source using PyGlossary's Python entrypoint."""
     print(f"Converting {mdx_path} to AppleDict format...")
-    
-    # Use pyglossary
+
+    # PyGlossary does not expose a pyglossary.__main__ module, so invoke its
+    # CLI entrypoint with the same interpreter running this script.
+    inline_code = "from pyglossary.ui.main import main; main()"
+
     cmd = [
-        sys.executable, "-m", "pyglossary",
+        sys.executable,
+        "-c",
+        inline_code,
         str(mdx_path),
         str(output_dir / "temp.apple"),
         "--write-format=AppleDict",
@@ -322,8 +327,16 @@ def convert_mdx(mdx_path, output_dir):
     if result.returncode != 0:
         print(f"Error: pyglossary failed:\n{result.stderr}")
         sys.exit(1)
-    
+
     return output_dir / "temp.apple"
+
+
+def run_make(ddk_path, target=None):
+    """Run Make with the discovered Dictionary Development Kit path."""
+    cmd = ["make", f"DICT_BUILD_TOOL_DIR={ddk_path}"]
+    if target:
+        cmd.append(target)
+    return subprocess.run(cmd, capture_output=True, text=True)
 
 
 def main():
@@ -336,7 +349,7 @@ def main():
     parser.add_argument("--identifier", help="Bundle identifier (e.g., com.example.dict)")
     parser.add_argument("--install", action="store_true", help="Install after building")
     parser.add_argument("--keep-resources", action="store_true", 
-                       help="Include audio/image resources (large)")
+                        help="Include audio/image resources (large)")
     
     args = parser.parse_args()
     
@@ -424,12 +437,12 @@ def main():
             shutil.move(str(output_dir / "OtherResources"), "/tmp/mdx2apple_resources")
             resources_moved = True
         
-        result = subprocess.run(["make"], capture_output=True, text=True)
+        result = run_make(ddk_path)
         if result.returncode != 0:
             print(f"Build failed:\n{result.stderr}")
             sys.exit(1)
-        
-        result = subprocess.run(["make", "install"], capture_output=True, text=True)
+
+        result = run_make(ddk_path, "install")
         if result.returncode != 0:
             print(f"Install failed:\n{result.stderr}")
             sys.exit(1)
