@@ -23,7 +23,7 @@ MDict dictionaries have complex HTML structures that Apple Dictionary can't rend
 
 ```bash
 # Clone repo
-git clone https://github.com/YOUR_USERNAME/mdx2apple.git
+git clone https://github.com/nxxxsooo/mdx2apple.git
 cd mdx2apple
 
 # Install dependencies

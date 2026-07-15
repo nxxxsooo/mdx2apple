@@ -12,9 +12,10 @@ Converter tool: MDict .mdx dictionary files → Apple Dictionary format (.dictio
 - `README.md` + `README_CN.md` — Bilingual docs
 
 ## Current Status
-- ✅ Published on GitHub
-- ✅ Initial commit with working converter
+- Stable, completed utility maintained on demand
+- Published on GitHub with a working converter and regression tests
+- A generated Apple Dictionary is still installed and used on the current Mac
 
-## Next Steps
-- Polish documentation
-- Handle edge cases in .mdx parsing
+## Maintenance
+- Preserve the working conversion contract and existing CLI behavior
+- Address compatibility or parsing edge cases when real dictionaries expose them; no speculative feature roadmap
