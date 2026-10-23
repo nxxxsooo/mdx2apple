@@ -5,16 +5,17 @@ Converter tool: MDict .mdx dictionary files → Apple Dictionary format (.dictio
 
 ## Architecture
 - Python-based converter
-- Reads .mdx via mdict-utils → generates Apple Dictionary XML → compiles via Dictionary Development Kit
+- Reads .mdx/.mdd via PyGlossary's format reader → preserves complete HTML and resolves aliases/media → generates Apple Dictionary XML → compiles via Dictionary Development Kit
 
 ## Key Files
 - Main converter script (root)
 - `README.md` + `README_CN.md` — Bilingual docs
 
 ## Current Status
-- Stable, completed utility maintained on demand
-- Published on GitHub with a working converter and regression tests
-- A generated Apple Dictionary is still installed and used on the current Mac
+- Full-content converter with aliases, native audio, illustrations and Oxford dark-mode styling
+- Source-only distribution on GitHub; no versioned release or CI automation is configured
+- Reproduce validation with `python -m unittest discover -s tests -v`; corpus checks use `tests/audit_native_dictionary.py`
+- Validation scope and results: `docs/oald-native-audit.md`
 
 ## Maintenance
 - Preserve the working conversion contract and existing CLI behavior

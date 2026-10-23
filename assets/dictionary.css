@@ -1,0 +1,137 @@
+/* Source styles are imported before these Apple Dictionary adaptations. */
+d|entry { display: block; }
+.mdx-entry { overflow-wrap: anywhere; }
+.mdx-entry img { max-width: 100%; height: auto; }
+.mdx-entry audio.mdx-audio {
+    display: inline-block;
+    width: 44px;
+    height: 28px;
+    vertical-align: middle;
+}
+
+/* Retain all reference material without depending on dictionary scripts. */
+.mdx-entry div.collapse .body,
+.mdx-entry div.collapse ul,
+.mdx-entry div.collapse table,
+.mdx-entry div.collapse .p,
+.mdx-entry .hide + dd,
+.mdx-entry .hide + dd.deep { display: block !important; }
+.mdx-entry details.mdx-picture {
+    float: right;
+    width: 150px;
+    max-width: 35%;
+    height: auto;
+    background: none;
+    border: 0;
+    margin: 0.5em 0 0.5em 1em;
+}
+.mdx-entry details.mdx-picture[open] {
+    float: none;
+    width: 100%;
+    max-width: 100%;
+    margin-left: 0;
+}
+.mdx-entry .mdx-picture summary { cursor: pointer; padding: 0; }
+.mdx-entry .mdx-picture summary img { display: inline-block; width: 150px; }
+.mdx-entry .mdx-picture-full { max-width: 100%; }
+
+@media (prefers-color-scheme: light) {
+    .mdx-entry .oald :is(h1.headword, h2.h) { color: #c03126; }
+    .mdx-entry .oald :is(xt, ot, at, unxt) :is(chn, other, ai),
+    .mdx-entry .oald at { color: #666666; }
+}
+
+@media (prefers-color-scheme: dark) {
+    html {
+        color-scheme: dark;
+        -apple-color-filter: none;
+        background-color: #1f1f1f;
+        color: #eceaed;
+    }
+    body { background-color: #1f1f1f; color: #eceaed; }
+
+    /* Oxford's source palette is light-only. Theme semantic text and surfaces
+       explicitly; image/icon assets retain their original colors. */
+    .mdx-entry .oald {
+        --dict-text: #eceaed;
+        --dict-muted: #bdb6c2;
+        --dict-headword: #ff9b8d;
+        --dict-phonetic: #d5b9ef;
+        --dict-definition: #e4eafb;
+        --dict-translation: #efb7c6;
+        --dict-example: #8ed8cc;
+        --dict-link: #a3caff;
+        --dict-label: #e4c09b;
+        --dict-surface: #302b30;
+        --dict-hover: #403740;
+        --dict-border: #776371;
+        --dict-note-border: #b38b6c;
+        color: var(--dict-text);
+    }
+    .mdx-entry .oald * { color: inherit !important; }
+    .mdx-entry .oald :is(h1.headword, h2.h) {
+        color: var(--dict-headword) !important;
+    }
+    .mdx-entry .oald :is(.pos, .grammar, .labels, .vf_prefix, vgslabel) {
+        color: var(--dict-label) !important;
+    }
+    .mdx-entry .oald :is(.phon, phon, .ei) {
+        color: var(--dict-phonetic) !important;
+    }
+    .mdx-entry .oald :is(.def, .cf, .eb, .v-g, v-g, .inflected_form, .verb_form, .dt) {
+        color: var(--dict-definition) !important;
+    }
+    .mdx-entry .oald :is(.x, .unx) { color: var(--dict-example) !important; }
+    .mdx-entry .oald :is(chn, other, ai, at, .variants, .inflections, phon_label) {
+        color: var(--dict-muted) !important;
+    }
+    .mdx-entry .oald :is(deft, defT) chn {
+        color: var(--dict-translation) !important;
+    }
+    .mdx-entry .oald :is(a[href], .xref, .xh, xh, .topic, topic, .use, .jumplink, jumplink) {
+        color: var(--dict-link) !important;
+    }
+    /* WebKit can retain its UA link paint on named jump-link descendants even
+       when their computed color is overridden. Set the paint color explicitly. */
+    .mdx-entry .oald .jumplink {
+        -webkit-text-fill-color: var(--dict-link) !important;
+    }
+    .mdx-entry .oald :is(.idm, .pv, .idioms_heading, .phrasal_verb_links h3) {
+        color: var(--dict-phonetic) !important;
+    }
+    .mdx-entry .oald :is(.shcut, .wrap) { color: var(--dict-label) !important; }
+    .mdx-entry .oald :is(
+        div.collapse, .details_contents, div.collapse .body,
+        div.collapse ul.examples, details:not(.mdx-picture),
+        un, .un, blockquote, .blockquote, .grey-grad, .idsym-g, .ui-grad dt, .z_idsym
+    ) {
+        background-color: var(--dict-surface) !important;
+        border-color: var(--dict-note-border) !important;
+    }
+    .mdx-entry .oald :is(.box_title, summary, .ui-grad dt):hover {
+        background-color: var(--dict-hover) !important;
+    }
+    .mdx-entry .oald :is(.idioms, .phrasal_verb_links, .jumplink, jumplink, .shcut) {
+        border-color: var(--dict-border) !important;
+    }
+    .mdx-entry .oald :is(.jumplink, jumplink):hover {
+        background-color: var(--dict-hover) !important;
+    }
+    .mdx-entry .oald :is(.topic_cefr, .opal_symbol) {
+        background-color: #49404d !important;
+        color: var(--dict-text) !important;
+    }
+    .mdx-entry .oald :is(.list-col .selected, .see-more, .wordlist-popup,
+                        .wordlist-popup .header, .wordlist-popup .footer) {
+        background-color: var(--dict-surface) !important;
+        border-color: var(--dict-border) !important;
+    }
+    .mdx-entry .oald :is(a, summary, audio):focus-visible {
+        outline: 2px solid var(--dict-link);
+        outline-offset: 3px;
+    }
+    .mdx-entry .oald ::selection {
+        background-color: #405676;
+        color: #ffffff;
+    }
+}

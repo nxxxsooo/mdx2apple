@@ -1,468 +1,519 @@
 #!/usr/bin/env python3
-"""
-mdx2apple - Convert MDict (.mdx) dictionaries to Apple Dictionary format
+"""Convert complete MDict records to macOS Dictionary.app bundles."""
 
-This tool converts MDict dictionaries to macOS Dictionary.app format,
-handling the complex HTML structures that cause display issues.
-
-Usage:
-    python mdx2apple.py input.mdx [--name "Dictionary Name"] [--output ./output]
-"""
+from __future__ import annotations
 
 import argparse
+from collections import Counter, defaultdict, deque
+import hashlib
+from html import unescape as unescape_html
+import json
 import os
+from pathlib import Path, PurePosixPath
+import plistlib
 import re
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from urllib.parse import quote, unquote, urlsplit
 
-try:
-    from bs4 import BeautifulSoup
-except ImportError:
-    print("Error: beautifulsoup4 required. Run: pip install beautifulsoup4")
-    sys.exit(1)
+from lxml import etree, html
+
+
+DCS = "http://www.apple.com/DTDs/DictionaryService-1.0.rng"
+XHTML = "http://www.w3.org/1999/xhtml"
+ASSETS = Path(__file__).resolve().parent / "assets"
+DEFAULT_CREDITS = "macOS conversion: mdx2apple."
+XML_CONTROLS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+STYLE_EXTENSIONS = {".css", ".ttf", ".otf", ".woff", ".woff2"}
+RESERVED_RESOURCES = {
+    "body.data", "keytext.data", "keytext.index", "entryid.data",
+    "entryid.index", "defaultstyle.css",
+}
 
 
 def check_dependencies():
-    """Check if required tools are installed."""
-    # Check pyglossary
-    try:
-        import pyglossary
-    except ImportError:
-        print("Error: pyglossary required. Run: pip install pyglossary lxml html5lib")
-        sys.exit(1)
-    
-    # Check DDK
-    ddk_paths = [
-        os.path.expanduser("~/Library/Developer/Dictionary-Development-Kit"),
-        "/Applications/Utilities/Dictionary Development Kit",
-    ]
-    
-    for path in ddk_paths:
-        if os.path.exists(os.path.join(path, "bin", "build_dict.sh")):
+    """Fail before conversion if the parser or native build tool is missing."""
+    from pyglossary.plugin_lib.readmdict import MDX, MDD  # noqa: F401
+
+    for path in (
+        Path.home() / "Library/Developer/Dictionary-Development-Kit",
+        Path("/Applications/Utilities/Dictionary Development Kit"),
+    ):
+        if (path / "bin/build_dict.sh").is_file():
             return path
-    
-    print("Error: Dictionary Development Kit not found.")
-    print("Install with: git clone https://github.com/ikey4u/macddk.git ~/Library/Developer/Dictionary-Development-Kit")
-    sys.exit(1)
+    raise FileNotFoundError(
+        "Dictionary Development Kit not found. Install it in "
+        "~/Library/Developer/Dictionary-Development-Kit."
+    )
 
 
-def escape_xml(text):
-    """Escape special XML characters."""
-    if not text:
-        return ""
-    text = str(text)
-    text = text.replace('&', '&amp;')
-    text = text.replace('<', '&lt;')
-    text = text.replace('>', '&gt;')
-    return text
+def mdx_records(path):
+    """Use PyGlossary's format reader, without its lossy output transforms."""
+    from pyglossary.plugin_lib.readmdict import MDX
+
+    for key, definition in MDX(str(path), substyle=True).items():
+        yield key.decode("utf-8"), definition.decode("utf-8").rstrip("\x00")
 
 
-def clean_entry(entry):
-    """Clean a single dictionary entry, simplifying HTML structure."""
-    # Extract entry tag
-    entry_tag_match = re.match(r'<d:entry[^>]*>', entry)
-    if not entry_tag_match:
+def normalized_key(key):
+    if "<" in key and ">" in key:
+        key = html.fragment_fromstring(key, create_parent="span").text_content()
+    return " ".join(unescape_html(key).split())
+
+
+def resource_name(value):
+    """MDict resource roots are virtual; never let them escape the output root."""
+    value = unquote(value).replace("\\", "/")
+    for prefix in ("sound://", "file://"):
+        if value.startswith(prefix):
+            value = value[len(prefix):]
+    value = value.lstrip("/")
+    path = PurePosixPath(value)
+    if not value or ".." in path.parts or "\x00" in value:
+        raise ValueError(f"Invalid dictionary resource path: {value!r}")
+    if str(path).casefold() in RESERVED_RESOURCES:
+        raise ValueError(f"Resource would overwrite an Apple Dictionary build file: {value!r}")
+    return str(path)
+
+
+def drop_element(node):
+    """Remove non-content markup without losing the following text."""
+    node.drop_tree()
+
+
+class Catalog:
+    """Resolve records and redirect chains before writing any entry bodies."""
+
+    def __init__(self, records):
+        self.entries = []
+        self.keys = defaultdict(list)
+        self.aliases = defaultdict(list)
+        self.anchors = defaultdict(list)
+        self.diagnostics = defaultdict(set)
+        self.source_keys = set()
+        self.source_records = 0
+        redirects = defaultdict(list)
+        for key, body in records:
+            self.source_keys.add(key)
+            self.source_records += 1
+            target = body.strip()
+            if target.startswith("@@@LINK="):
+                redirects[key].append(target[8:].strip())
+                continue
+            entry_id = f"entry{len(self.entries) + 1:06d}"
+            self.entries.append((key, entry_id))
+            self.keys[key].append(entry_id)
+            self.aliases[entry_id].append(key)
+            # Source DOM ids let website-style cross-references select the
+            # correct homograph instead of blindly removing suffixes.
+            for anchor in re.findall(r'''(?<![-\w])id\s*=\s*["']([^"']+)["']''', body):
+                if entry_id not in self.anchors[anchor]:
+                    self.anchors[anchor].append(entry_id)
+
+        resolved_keys = {}
+
+        def resolve(key, visiting):
+            if key in resolved_keys:
+                return resolved_keys[key]
+            if key in visiting:
+                self.diagnostics["redirect_cycles"].add(key)
+                return self.keys.get(key, [])
+            if key not in redirects and key not in self.keys:
+                self.diagnostics["missing_redirect_targets"].add(key)
+                return []
+            result = list(self.keys.get(key, []))
+            for target in redirects.get(key, []):
+                result.extend(resolve(target, visiting | {key}))
+            result = list(dict.fromkeys(result))
+            resolved_keys[key] = result
+            return result
+
+        for key in redirects:
+            ids = resolve(key, set())
+            if ids:
+                self.keys[key] = ids
+            for entry_id in ids:
+                self.aliases[entry_id].append(key)
+        # Retain the actual source spelling, and add convenient whitespace
+        # normalization. Do not overwrite another entry's literal key.
+        for key, ids in list(self.keys.items()):
+            normalized = normalized_key(key)
+            if normalized and normalized != key:
+                for entry_id in ids:
+                    if normalized not in self.aliases[entry_id]:
+                        self.aliases[entry_id].append(normalized)
+                self.keys.setdefault(normalized, ids)
+        self.casefolded = {}
+        for key, ids in self.keys.items():
+            folded = key.casefold()
+            current = self.casefolded.get(folded, ids)
+            self.casefolded[folded] = list(dict.fromkeys(current + ids))
+
+    def find(self, key):
+        return self.keys.get(key) or self.keys.get(normalized_key(key)) or []
+
+    def reference(self, target, entry_id, local_ids, identifier):
+        """Translate actual keys and known DOM anchors to native references."""
+        target = unquote(target)
+        if target.startswith("#"):
+            return target if target[1:] in local_ids else None
+        for prefix in ("entry://", "bword://", "x-dictionary:d:", "x-dictionary:r:"):
+            if target.startswith(prefix):
+                target = target[len(prefix):]
+                break
+        key, _, fragment = target.partition("#")
+        if fragment and fragment in local_ids:
+            return "#" + fragment
+        ids = self.find(key)
+        if not ids:
+            if key in local_ids:
+                return "#" + key
+            ids = self.anchors.get(fragment or key, [])
+        if not ids and key.startswith("/definition/"):
+            slug = key.rstrip("/").rsplit("/", 1)[-1]
+            ids = self.find(slug) or self.anchors.get(slug, [])
+            if not ids:
+                # Oxford's website uses word1, while its DOM uses word_1.
+                dom_id = re.sub(r"(?<=[a-z-])(\d+)$", r"_\1", slug)
+                ids = self.anchors.get(dom_id, [])
+            if not ids:
+                ids = self.casefolded.get(slug.casefold(), [])
+            if not ids:
+                base = re.sub(r"\d+$", "", slug)
+                ids = self.find(base) or self.find(base.replace("-", " "))
+        if len(ids) == 1:
+            return f"x-dictionary:r:{ids[0]}:{identifier}"
+        if ids:
+            return f"x-dictionary:d:{quote(key, safe='')}:{identifier}"
         return None
-    entry_tag = entry_tag_match.group(0)
-    
-    # Extract d:index tags (must keep all of them!)
-    indexes = re.findall(r'<d:index[^>]*/>', entry)
-    if not indexes:
-        return None
-    indexes_str = "\n".join(indexes)
-    
-    # Get content after indexes
-    last_index = entry.rfind('<d:index')
-    if last_index > 0:
-        end_of_last_index = entry.find('/>', last_index) + 2
-        inner_html = entry[end_of_last_index:entry.rfind('</d:entry>')]
-    else:
-        inner_html = entry[entry_tag_match.end():entry.rfind('</d:entry>')]
-    
-    try:
-        soup = BeautifulSoup(inner_html, 'html.parser')
-        clean_parts = []
-        
-        # Get headword
-        headword = soup.find('h1', class_='headword') or soup.find('h1')
-        if headword:
-            clean_parts.append(f"<h1>{escape_xml(headword.get_text())}</h1>")
-        
-        # Get part of speech
-        pos = soup.find('span', class_='pos')
-        if pos:
-            clean_parts.append(f"<p><i>{escape_xml(pos.get_text())}</i></p>")
-        
-        # Get pronunciation
-        phons = soup.find_all('span', class_='phon')
-        if phons:
-            pron_text = ' '.join([p.get_text() for p in phons[:2]])
-            clean_parts.append(f"<p>{escape_xml(pron_text)}</p>")
-        
-        # Get definitions and examples
-        senses = soup.find_all('li', class_='sense')
-        if senses:
-            clean_parts.append("<ol>")
-            for sense in senses[:10]:
-                clean_parts.append("<li>")
-                
-                # Definition (English)
-                defn = sense.find('span', class_='def')
-                if defn:
-                    clean_parts.append(f"<p><b>{escape_xml(defn.get_text())}</b></p>")
-                
-                # Chinese definition
-                for chn_tag in ['deft', 'chn']:
-                    chn_container = sense.find(chn_tag)
-                    if chn_container:
-                        chn = chn_container.find('chn') if chn_tag == 'deft' else chn_container
-                        if chn:
-                            clean_parts.append(f"<p>{escape_xml(chn.get_text())}</p>")
-                            break
-                
-                # Examples (limit to 2)
-                examples_found = 0
-                for ex in sense.find_all('span', class_='x'):
-                    if examples_found >= 2:
-                        break
-                    ex_text = escape_xml(ex.get_text())
-                    
-                    # Find Chinese translation
-                    parent = ex.find_parent('li')
-                    chn_text = ""
-                    if parent:
-                        xt = parent.find('xt')
-                        if xt:
-                            chn_el = xt.find('chn')
-                            if chn_el:
-                                chn_text = escape_xml(chn_el.get_text())
-                    
-                    if chn_text:
-                        clean_parts.append(f"<p class='ex'>• {ex_text} {chn_text}</p>")
-                    else:
-                        clean_parts.append(f"<p class='ex'>• {ex_text}</p>")
-                    examples_found += 1
-                
-                clean_parts.append("</li>")
-            clean_parts.append("</ol>")
-        
-        # Fallback: if no structured content, get plain text
-        if len(clean_parts) <= 1:
-            text = escape_xml(soup.get_text(separator=' ', strip=True)[:500])
-            if text:
-                clean_parts.append(f"<p>{text}</p>")
-        
-        return f"{entry_tag}\n{indexes_str}\n" + "\n".join(clean_parts) + "\n</d:entry>"
-        
-    except Exception as e:
-        print(f"Warning: Error processing entry: {e}")
-        return None
 
 
-def clean_xml(input_path, output_path):
-    """Clean the entire XML file."""
-    print(f"Reading {input_path}...")
-    with open(input_path, 'r', encoding='utf-8') as f:
-        content = f.read()
-    
-    # Extract header
-    header_end = content.find('<d:entry')
-    header = content[:header_end]
-    
-    # Find all entries
-    entries = re.findall(r'<d:entry[^>]*>.*?</d:entry>', content, re.DOTALL)
-    print(f"Found {len(entries)} entries")
-    
-    # Clean entries
-    print("Cleaning entries...")
-    clean_entries = []
-    for i, entry in enumerate(entries):
-        if i % 5000 == 0:
-            print(f"  Progress: {i}/{len(entries)}")
-        cleaned = clean_entry(entry)
-        if cleaned:
-            clean_entries.append(cleaned)
-    
-    print(f"Writing {len(clean_entries)} cleaned entries...")
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(header)
-        f.write("\n".join(clean_entries))
-        f.write("\n</d:dictionary>\n")
-    
-    return len(clean_entries)
+class EntryAdapter:
+    def __init__(self, catalog, identifier):
+        self.catalog = catalog
+        self.identifier = identifier
+        self.stylesheets = set()
+        self.inline_styles = set()
+        self.resources = set()
+        self.counts = Counter()
+        self.unresolved_links = set()
+
+    def adapt(self, body, entry_id):
+        # HTML recovery is confined to the source boundary. XML output is
+        # serialized strictly and compilation errors are never skipped.
+        body = XML_CONTROLS.sub("", body)
+        root = html.fragment_fromstring(body, create_parent="div")
+        root.set("class", "mdx-entry")
+        for node in list(root.iter("script", "style", "link", "meta", "base")):
+            if node.tag == "link" and "stylesheet" in node.get("rel", "").lower():
+                href = node.get("href", "")
+                if href and not urlsplit(href).scheme:
+                    self.stylesheets.add(resource_name(href))
+            elif node.tag == "style" and node.text:
+                self.inline_styles.add(node.text)
+            drop_element(node)
+        original_text = root.text_content()
+        local_ids = {n.get("id") for n in root.iter() if n.get("id")}
+        for node in root.iter():
+            if not isinstance(node.tag, str):
+                continue
+            for attr in list(node.attrib):
+                if attr.lower().startswith("on"):
+                    del node.attrib[attr]
+            if node.get("src") and (not urlsplit(node.get("src")).scheme
+                                    or node.get("src").startswith("file://")):
+                name = resource_name(node.get("src"))
+                node.set("src", quote(name, safe="/"))
+                self.resources.add(name)
+            if node.tag == "img":
+                self.counts["images"] += 1
+            if node.tag == "audio":
+                node.set("controls", "controls")
+                node.set("preload", "none")
+            if node.tag != "a" or not node.get("href"):
+                continue
+            href = node.get("href")
+            if href.startswith("sound://"):
+                name = resource_name(href)
+                classes = node.get("class", "").split()
+                label = ("UK pronunciation" if "pron-uk" in classes else
+                         "US pronunciation" if "pron-us" in classes else "Pronunciation")
+                node.tag = "audio"
+                node.attrib.clear()
+                node.set("src", quote(name, safe="/"))
+                node.set("controls", "controls")
+                node.set("preload", "none")
+                node.set("class", "mdx-audio")
+                node.set("aria-label", label)
+                node.set("title", label)
+                self.resources.add(name)
+                self.counts["audio"] += 1
+            elif href.startswith(("http://", "https://", "mailto:")):
+                continue
+            else:
+                resolved = self.catalog.reference(
+                    href, entry_id, local_ids, self.identifier
+                )
+                if resolved:
+                    node.set("href", resolved)
+                    self.counts["resolved_links"] += 1
+                else:
+                    # Retain the label and all descendants. A broken source
+                    # reference should not navigate to an unrelated dictionary.
+                    node.attrib.pop("href")
+                    node.set("data-unresolved-reference", href)
+                    self.unresolved_links.add(href)
+                    self.counts["unresolved_links"] += 1
+        # Standard HTML disclosure works without the original MDict JavaScript.
+        for pic in root.xpath(".//div[contains(concat(' ', @class, ' '), ' pic ')]"):
+            thumb = pic.find("div[@class='pic_thumb']")
+            large = pic.find("div[@class='big_pic']")
+            if thumb is not None and large is not None:
+                pic.tag = "details"
+                pic.set("class", "mdx-picture")
+                thumb.tag = "summary"
+                thumb.attrib.clear()
+                thumb.set("aria-label", "Enlarge illustration")
+                large.set("class", "mdx-picture-full")
+        if root.text_content() != original_text:
+            raise ValueError(f"Content changed while adapting {entry_id}")
+        self.counts["text_preservation_checks"] += 1
+        return root
 
 
-def create_css(output_path):
-    """Create optimized CSS for Apple Dictionary."""
-    css = """@charset "UTF-8";
-@namespace d url(http://www.apple.com/DTDs/DictionaryService-1.0.rng);
-
-@media (prefers-color-scheme: dark) {
-    html { -apple-color-filter: apple-invert-lightness(); }
-}
-
-d|entry {
-    display: block;
-}
-
-h1 {
-    font-size: 150%;
-    font-weight: bold;
-    margin-bottom: 0.3em;
-}
-
-p {
-    margin: 0.3em 0;
-}
-
-ol {
-    margin-left: 1em;
-    padding-left: 0.5em;
-}
-
-li {
-    margin: 0.5em 0;
-}
-
-.ex {
-    color: #666;
-    margin-left: 1em;
-}
-
-@media (prefers-color-scheme: dark) {
-    .ex { color: #aaa; }
-}
-"""
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(css)
+def write_entries(records, catalog, adapter, output_path):
+    count = 0
+    with etree.xmlfile(str(output_path), encoding="UTF-8") as output:
+        output.write_declaration()
+        with output.element(f"{{{DCS}}}dictionary", nsmap={None: XHTML, "d": DCS}):
+            for key, body in records:
+                if body.strip().startswith("@@@LINK="):
+                    continue
+                expected_key, entry_id = catalog.entries[count]
+                if key != expected_key:
+                    raise ValueError("MDX records changed during conversion")
+                title = normalized_key(key)
+                if not title:
+                    raise ValueError("MDX contains an entry with an empty headword")
+                node = adapter.adapt(body, entry_id)
+                with output.element(f"{{{DCS}}}entry", {"id": entry_id, f"{{{DCS}}}title": title}):
+                    for alias in dict.fromkeys(catalog.aliases[entry_id]):
+                        if not alias.strip():
+                            catalog.diagnostics["empty_index_keys"].add(alias)
+                            continue
+                        with output.element(f"{{{DCS}}}index", {
+                            f"{{{DCS}}}value": alias, f"{{{DCS}}}title": title,
+                        }):
+                            pass
+                    output.write(node)
+                count += 1
+                output.write("\n")
+                if count % 5000 == 0:
+                    print(f"  Converted {count:,}/{len(catalog.entries):,} entries", flush=True)
+    if count != len(catalog.entries):
+        raise ValueError("MDX record count changed during conversion")
+    return count
 
 
-def create_plist(output_path, name, identifier, copyright_text=""):
-    """Create simplified plist for Apple Dictionary."""
-    plist = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleDevelopmentRegion</key>
-    <string>English</string>
-    <key>CFBundleIdentifier</key>
-    <string>{identifier}</string>
-    <key>CFBundleDisplayName</key>
-    <string>{name}</string>
-    <key>CFBundleName</key>
-    <string>{identifier.split('.')[-1]}</string>
-    <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
-    <key>DCSDictionaryCopyright</key>
-    <string>{copyright_text or 'Converted by mdx2apple'}</string>
-    <key>DCSDictionaryManufacturerName</key>
-    <string>mdx2apple</string>
-</dict>
-</plist>
-"""
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(plist)
+def extract_resources(mdx_path, destination, adapter, keep_resources):
+    from pyglossary.plugin_lib.readmdict import MDD
+
+    destination.mkdir(parents=True, exist_ok=True)
+    archives = [mdx_path.with_suffix(".mdd"), mdx_path.with_suffix(".1.mdd")]
+    number = 2
+    while mdx_path.with_suffix(f".{number}.mdd").exists():
+        archives.append(mdx_path.with_suffix(f".{number}.mdd"))
+        number += 1
+    saved = set()
+    for archive in archives:
+        if not archive.is_file():
+            continue
+        print(f"Extracting {archive.name}...", flush=True)
+        for key, data in MDD(str(archive)).items():
+            name = resource_name(key.decode("utf-8"))
+            if not keep_resources and Path(name).suffix.lower() not in STYLE_EXTENSIONS:
+                continue
+            path = destination / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            saved.add(name)
+    # Sidecar styles/assets may customize or supplement the archive. Copy only
+    # referenced paths, never unrelated databases or other neighboring files.
+    pending = deque(sorted(adapter.stylesheets))
+    if keep_resources:
+        pending.extend(sorted(adapter.resources))
+    visited = set()
+    while pending:
+        name = pending.popleft()
+        if name in visited:
+            continue
+        visited.add(name)
+        src = mdx_path.parent / name
+        if src.is_file():
+            resolved = src.resolve()
+            resolved.relative_to(mdx_path.parent.resolve())
+            dest = destination / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+            saved.add(name)
+        dest = destination / name
+        if dest.is_file() and dest.suffix.lower() == ".css":
+            css = dest.read_text(encoding="utf-8-sig")
+            for value in re.findall(r'''url\(\s*["']?([^\)"']+)["']?\s*\)''', css):
+                if urlsplit(value).scheme or value.startswith("#"):
+                    continue
+                # CSS paths are relative to the stylesheet, not the entry.
+                relative = os.path.normpath(str(Path(name).parent / unquote(value)))
+                pending.append(resource_name(relative))
+    return saved
+
+
+def create_css(output_path, stylesheets=(), inline_styles=()):
+    # @import must precede @namespace and ordinary rules in CSS.
+    imports = "".join(f'@import url("{quote(name, safe="/")}");\n'
+                      for name in sorted(stylesheets))
+    base = (ASSETS / "dictionary.css").read_text()
+    output_path.write_text(
+        '@charset "UTF-8";\n' + imports
+        + f'@namespace d url({DCS});\n'
+        + "\n".join(sorted(inline_styles)) + "\n" + base,
+        encoding="utf-8",
+    )
+
+
+def create_plist(output_path, name, identifier, copyright_text="", *,
+                 short_name=None, publisher="", credits=DEFAULT_CREDITS):
+    """Keep the full title, toolbar label, content owner and tool credit distinct."""
+    data = {
+        "CFBundleDevelopmentRegion": "English",
+        "CFBundleIdentifier": identifier,
+        "CFBundleDisplayName": name,
+        "CFBundleName": short_name or name,
+        "CFBundleShortVersionString": "2.0",
+        "DCSDictionaryCopyright": "\n".join(
+            part.strip() for part in (copyright_text, credits) if part.strip()
+        ),
+        "DCSDictionaryManufacturerName": publisher,
+    }
+    output_path.write_bytes(plistlib.dumps(data))
 
 
 def create_makefile(output_path, ddk_path, dict_name):
-    """Create Makefile for building the dictionary."""
-    makefile = f"""#
-# Makefile for {dict_name}
-#
-
-DICT_NAME = "{dict_name}"
-DICT_SRC_PATH = "{dict_name}.xml"
-CSS_PATH = "{dict_name}.css"
-PLIST_PATH = "{dict_name}.plist"
-
-DICT_BUILD_OPTS = -v 10.11
-DICT_BUILD_TOOL_DIR = "{ddk_path}"
-DICT_BUILD_TOOL_BIN = "$(DICT_BUILD_TOOL_DIR)/bin"
-
-DICT_DEV_KIT_OBJ_DIR = ./objects
-export DICT_DEV_KIT_OBJ_DIR
-
-DESTINATION_FOLDER = ~/Library/Dictionaries
-RM = /bin/rm
+    # Build from an empty working directory so DDK's OtherResources/* glob
+    # cannot exceed ARG_MAX. ditto copies the resource tree afterwards.
+    output_path.write_text(f'''DICT_NAME = {dict_name}
+DICT_BUILD_TOOL_DIR = {ddk_path}
+DESTINATION_FOLDER = $(HOME)/Library/Dictionaries
 
 all:
-\t"$(DICT_BUILD_TOOL_BIN)/build_dict.sh" $(DICT_BUILD_OPTS) $(DICT_NAME) $(DICT_SRC_PATH) $(CSS_PATH) $(PLIST_PATH)
-\t@echo "Done."
+\tmkdir -p .build
+\tcd .build && DICT_DEV_KIT_OBJ_DIR=../objects "$(DICT_BUILD_TOOL_DIR)/bin/build_dict.sh" -v 10.11 "$(DICT_NAME)" "../$(DICT_NAME).xml" "../$(DICT_NAME).css" "../$(DICT_NAME).plist"
+\tditto --noextattr --norsrc OtherResources "objects/$(DICT_NAME).dictionary/Contents/Resources"
 
 install:
-\t@echo "Installing into $(DESTINATION_FOLDER)"
-\tmkdir -p $(DESTINATION_FOLDER)
-\tditto --noextattr --norsrc $(DICT_DEV_KIT_OBJ_DIR)/$(DICT_NAME).dictionary $(DESTINATION_FOLDER)/$(DICT_NAME).dictionary
-\ttouch $(DESTINATION_FOLDER)
-\t@echo "Done. Restart Dictionary.app to use."
+\tmkdir -p "$(DESTINATION_FOLDER)"
+\tditto --noextattr --norsrc "objects/$(DICT_NAME).dictionary" "$(DESTINATION_FOLDER)/$(DICT_NAME).dictionary"
+\ttouch "$(DESTINATION_FOLDER)"
 
 clean:
-\t$(RM) -rf $(DICT_DEV_KIT_OBJ_DIR)
-"""
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(makefile)
+\trm -rf objects .build
+''', encoding="utf-8")
 
 
-def convert_mdx(mdx_path, output_dir):
-    """Convert MDX to AppleDict source using PyGlossary's Python entrypoint."""
-    print(f"Converting {mdx_path} to AppleDict format...")
+def convert_mdx(mdx_path, output_dir, identifier, keep_resources=False):
+    print("Indexing original MDX records and aliases...", flush=True)
+    catalog = Catalog(mdx_records(mdx_path))
+    adapter = EntryAdapter(catalog, identifier)
+    base_name = bundle_name(mdx_path)
+    xml_path = output_dir / f"{base_name}.xml"
+    count = write_entries(mdx_records(mdx_path), catalog, adapter, xml_path)
+    resource_dir = output_dir / "OtherResources"
+    if resource_dir.exists():
+        raise FileExistsError(f"Resource directory already exists: {resource_dir}; use a fresh output directory")
+    saved = extract_resources(mdx_path, resource_dir, adapter, keep_resources)
+    missing_styles = adapter.stylesheets - saved
+    if missing_styles:
+        raise FileNotFoundError(f"Missing source stylesheets: {sorted(missing_styles)}")
+    create_css(output_dir / f"{base_name}.css", adapter.stylesheets, adapter.inline_styles)
+    report = {
+        "entries": count,
+        "source_records": catalog.source_records,
+        "source_keys": len(catalog.source_keys),
+        "indexed_keys": len(catalog.keys),
+        "adapted": dict(adapter.counts),
+        "unresolved_links": sorted(adapter.unresolved_links),
+        "redirect_diagnostics": {key: sorted(values) for key, values in catalog.diagnostics.items()},
+        "resources_included": keep_resources,
+        "resources_written": len(saved),
+        "missing_resources": sorted(adapter.resources - saved) if keep_resources else [],
+    }
+    (output_dir / "conversion-report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(f"Converted {count:,} complete entries; report: {output_dir / 'conversion-report.json'}", flush=True)
+    return report
 
-    # PyGlossary does not expose a pyglossary.__main__ module, so invoke its
-    # CLI entrypoint with the same interpreter running this script.
-    inline_code = "from pyglossary.ui.main import main; main()"
 
-    cmd = [
-        sys.executable,
-        "-c",
-        inline_code,
-        str(mdx_path),
-        str(output_dir / "temp.apple"),
-        "--write-format=AppleDict",
-        "-v3"
-    ]
-    
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(f"Error: pyglossary failed:\n{result.stderr}")
-        sys.exit(1)
-
-    return output_dir / "temp.apple"
+def bundle_name(mdx_path):
+    name = re.sub(r"[^A-Za-z0-9_]", "_", mdx_path.stem).strip("_")
+    return name or "dictionary_" + hashlib.sha256(mdx_path.stem.encode()).hexdigest()[:12]
 
 
-def run_make(ddk_path, target=None):
-    """Run Make with the discovered Dictionary Development Kit path."""
+def run_make(ddk_path, target=None, cwd=None):
     cmd = ["make", f"DICT_BUILD_TOOL_DIR={ddk_path}"]
     if target:
         cmd.append(target)
-    return subprocess.run(cmd, capture_output=True, text=True)
+    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Convert MDict (.mdx) to Apple Dictionary format"
-    )
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", help="Input .mdx file")
-    parser.add_argument("--name", help="Dictionary display name")
-    parser.add_argument("--output", "-o", default="./output", help="Output directory")
+    parser.add_argument("--name", help="Full dictionary name in Settings")
+    parser.add_argument("--short-name", help="Compact dictionary name for toolbar tabs")
+    parser.add_argument("--copyright", default="", help="Original dictionary copyright notice")
+    parser.add_argument("--publisher", default="", help="Original dictionary publisher")
+    parser.add_argument("--credits", default=DEFAULT_CREDITS, help="Conversion credit below the copyright")
+    parser.add_argument("--output", "-o", default="./output", help="Fresh output directory")
     parser.add_argument("--identifier", help="Bundle identifier (e.g., com.example.dict)")
-    parser.add_argument("--install", action="store_true", help="Install after building")
-    parser.add_argument("--keep-resources", action="store_true", 
-                        help="Include audio/image resources (large)")
-    
+    parser.add_argument("--install", action="store_true", help="Build and install after conversion")
+    parser.add_argument("--keep-resources", action="store_true", help="Include audio/image resources")
     args = parser.parse_args()
-    
-    # Validate input
-    mdx_path = Path(args.input)
-    if not mdx_path.exists():
-        print(f"Error: {mdx_path} not found")
-        sys.exit(1)
-    
-    # Check dependencies
-    ddk_path = check_dependencies()
-    print(f"Using DDK: {ddk_path}")
-    
-    # Setup output
-    output_dir = Path(args.output)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Determine names
-    base_name = mdx_path.stem.replace(" ", "_").replace("-", "_")
-    dict_name = args.name or base_name
-    identifier = args.identifier or f"com.mdx2apple.{base_name.lower()}"
-    
-    print(f"\nConverting: {mdx_path.name}")
-    print(f"Output: {output_dir}")
-    print(f"Name: {dict_name}")
-    
-    # Step 1: Convert MDX to AppleDict source
-    apple_dir = convert_mdx(mdx_path, output_dir)
-    
-    # Find the generated XML
-    xml_files = list(apple_dir.glob("*.xml"))
-    if not xml_files:
-        print("Error: No XML file generated")
-        sys.exit(1)
-    
-    orig_xml = xml_files[0]
-    
-    # Step 2: Clean XML
-    clean_xml_path = output_dir / f"{base_name}.xml"
-    entry_count = clean_xml(orig_xml, clean_xml_path)
-    
-    # Step 3: Create CSS
-    css_path = output_dir / f"{base_name}.css"
-    create_css(css_path)
-    
-    # Step 4: Create plist
-    plist_path = output_dir / f"{base_name}.plist"
-    create_plist(plist_path, dict_name, identifier)
-    
-    # Step 5: Create Makefile
-    makefile_path = output_dir / "Makefile"
-    create_makefile(makefile_path, ddk_path, base_name)
-    
-    # Step 6: Handle resources
-    resources_dir = apple_dir / "OtherResources"
-    if resources_dir.exists() and args.keep_resources:
-        target_resources = output_dir / "OtherResources"
-        if target_resources.exists():
-            shutil.rmtree(target_resources)
-        shutil.move(str(resources_dir), str(target_resources))
-        print(f"Resources moved to {target_resources}")
-    
-    # Clean up temp
-    shutil.rmtree(apple_dir)
-    
-    print(f"\n✅ Conversion complete!")
-    print(f"   Entries: {entry_count}")
-    print(f"\nNext steps:")
-    print(f"   cd {output_dir}")
-    print(f"   make          # Build dictionary")
-    print(f"   make install  # Install to ~/Library/Dictionaries")
-    
-    if args.keep_resources:
-        print(f"\nTo add resources after install:")
-        print(f"   rsync -a OtherResources/ ~/Library/Dictionaries/{base_name}.dictionary/Contents/Resources/")
-    
-    # Build if requested
-    if args.install:
-        print("\nBuilding...")
-        os.chdir(output_dir)
-        
-        # Move resources temporarily if they exist
-        resources_moved = False
-        if (output_dir / "OtherResources").exists():
-            shutil.move(str(output_dir / "OtherResources"), "/tmp/mdx2apple_resources")
-            resources_moved = True
-        
-        result = run_make(ddk_path)
-        if result.returncode != 0:
-            print(f"Build failed:\n{result.stderr}")
-            sys.exit(1)
-
-        result = run_make(ddk_path, "install")
-        if result.returncode != 0:
-            print(f"Install failed:\n{result.stderr}")
-            sys.exit(1)
-        
-        # Add resources
-        if resources_moved:
-            shutil.move("/tmp/mdx2apple_resources", str(output_dir / "OtherResources"))
-            dict_resources = Path.home() / "Library/Dictionaries" / f"{base_name}.dictionary/Contents/Resources"
-            subprocess.run(["rsync", "-a", str(output_dir / "OtherResources") + "/", str(dict_resources) + "/"])
-        
-        # Clear cache
-        cache_dir = Path.home() / "Library/Caches/com.apple.Dictionary"
-        if cache_dir.exists():
-            shutil.rmtree(cache_dir)
-        
-        subprocess.run(["killall", "Dictionary"], capture_output=True)
-        subprocess.run(["killall", "DictionaryWorkerService"], capture_output=True)
-        
-        print("\n✅ Dictionary installed! Open Dictionary.app to use.")
+    try:
+        mdx_path = Path(args.input).expanduser().resolve(strict=True)
+        ddk = check_dependencies()
+        output_dir = Path(args.output).expanduser().resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if any(output_dir.iterdir()):
+            raise FileExistsError(f"Output directory is not empty: {output_dir}; choose a fresh directory")
+        base_name = bundle_name(mdx_path)
+        identifier = args.identifier or f"com.mdx2apple.{base_name.lower().replace('_', '-')}"
+        if not re.fullmatch(r"[A-Za-z0-9.-]+", identifier):
+            raise ValueError("Bundle identifier must contain only ASCII letters, digits, dots or hyphens")
+        convert_mdx(mdx_path, output_dir, identifier, args.keep_resources)
+        create_plist(
+            output_dir / f"{base_name}.plist", args.name or mdx_path.stem, identifier,
+            args.copyright, short_name=args.short_name, publisher=args.publisher,
+            credits=args.credits,
+        )
+        create_makefile(output_dir / "Makefile", ddk, base_name)
+        if args.install:
+            for target in (None, "install"):
+                result = run_make(ddk, target, output_dir)
+                (output_dir / f"{target or 'build'}.log").write_text(result.stdout + result.stderr)
+                if result.returncode:
+                    raise RuntimeError(f"{target or 'Build'} failed; see {output_dir / (target or 'build')}.log")
+            subprocess.run(["killall", "Dictionary"], capture_output=True)
+            subprocess.run(["killall", "DictionaryWorkerService"], capture_output=True)
+            print(f"Installed: {Path.home() / 'Library/Dictionaries' / (base_name + '.dictionary')}")
+        else:
+            print(f'Build: make -C "{output_dir}"\nInstall: make -C "{output_dir}" install')
+    except (OSError, ValueError, ImportError, RuntimeError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

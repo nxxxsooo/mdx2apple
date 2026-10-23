@@ -1,122 +1,139 @@
 # mdx2apple
 
-将 MDict (.mdx) 词典转换为 macOS 词典格式。
+[English](README.md) · [简体中文](README_CN.md) · [项目网站](https://mjshao.fun/mdx2apple/)
 
-## 为什么需要这个工具？
+将 MDict（`.mdx` / `.mdd`）词典转换为 macOS 原生词典，保留完整词条。
 
-MDict 词典的 HTML 结构复杂，Apple Dictionary 无法正确渲染。本工具：
+## 保留的内容
 
-1. 将 MDX 转换为 AppleDict XML（通过 pyglossary）
-2. **清理并简化 HTML** 以兼容 Dictionary.app
-3. 生成优化的 CSS 和 plist
-4. 编译并安装词典
+- 全部释义、例句、翻译、词性、习语和用法说明。
+- 原始词头及别名，包括多级跳转和同形词。
+- 原始 CSS、字体、插图和发音资源。
+- 适配为原生词典引用的内部链接。
 
-## 系统要求
+转换器复用 PyGlossary 的 MDX/MDD 读取器，直接生成 Apple Dictionary XML。
+源词典脚本和事件处理器会被移除；声音链接改为标准音频控件，牛津词典的折叠说明
+默认展开，插图放大使用原生 HTML 折叠组件。
 
-- macOS
-- Python 3.8+
-- Dictionary Development Kit（自动从 GitHub 镜像安装）
+**OALD 10 实测：**62,137 个完整词条正文及 279,100 个原始查询键均通过原生引擎验证。
+旧版的「10 个义项、每个义项两条例句、500 字符回退」限制已移除。
+[查看验证范围](docs/oald-native-audit.md)。
 
 ## 安装
 
+需要 macOS、Python 3.12+ 及 Apple Dictionary Development Kit。
+
 ```bash
-# 克隆仓库
 git clone https://github.com/nxxxsooo/mdx2apple.git
 cd mdx2apple
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 
-# 安装依赖
-pip install pyglossary lxml beautifulsoup4 html5lib
-
-# 安装 DDK（如果尚未安装）
-git clone https://github.com/ikey4u/macddk.git ~/Library/Developer/Dictionary-Development-Kit
+# 尚未安装 DDK 时，单独安装：
+git clone https://github.com/ikey4u/macddk.git \
+  "$HOME/Library/Developer/Dictionary-Development-Kit"
 ```
 
-## 使用方法
+部分旧 MDX 使用 LZO 压缩，需要额外安装 `python-lzo`。OALD 10 使用 zlib，无需安装。
 
-### 基本用法
+## 转换并安装
 
-```bash
-python mdx2apple.py /path/to/dictionary.mdx
-```
-
-### 带参数
+使用新的输出目录。转换器会在 MDX 旁边查找同名 `.mdd`、`.1.mdd`、`.2.mdd` 等资源包。
+被词条或样式引用的同目录资源文件优先于资源包中的版本。
 
 ```bash
 python mdx2apple.py /path/to/dictionary.mdx \
-    --name "牛津词典" \
-    --output ./my_dict \
-    --install
+  --name "我的词典" \
+  --output ./output/my-dictionary \
+  --keep-resources \
+  --install
 ```
 
-### 参数说明
+安装后，在「词典 → 设置」中勾选新词典。安装成功不会自动修改已选择的词典。
 
 | 参数 | 说明 |
-|------|------|
-| `--name` | 在 Dictionary.app 中显示的名称 |
-| `--output`, `-o` | 输出目录（默认：`./output`） |
-| `--identifier` | Bundle ID（如 `com.example.dict`） |
-| `--install` | 转换后自动编译并安装 |
-| `--keep-resources` | 保留音频/图片资源（文件较大） |
+|---|---|
+| `--name` | 设置列表中的完整词典名称 |
+| `--short-name` | 顶部 tab 的简称，默认使用全称 |
+| `--copyright` | 原词典版权声明 |
+| `--publisher` | 原词典出版方 |
+| `--credits` | 显示在版权声明下方的转换署名 |
+| `--output`、`-o` | 新的输出目录，默认 `./output` |
+| `--identifier` | 唯一 Bundle ID，例如 `com.example.dictionary` |
+| `--keep-resources` | 包含图片、音频及其他资源包文件 |
+| `--install` | 编译并安装到 `~/Library/Dictionaries/` |
 
-## 手动编译
+不传 `--keep-resources` 时仍会保留 CSS 和字体；需要完整媒体功能时应传入该参数。
+转换不会修改源 MDX、MDD 或同目录文件。
 
-转换后：
-
-```bash
-cd output
-make          # 编译词典
-make install  # 安装到 ~/Library/Dictionaries
-```
-
-添加音频/图片资源：
+也可以先转换，再手动编译、安装：
 
 ```bash
-rsync -a OtherResources/ ~/Library/Dictionaries/词典名.dictionary/Contents/Resources/
+make -C output/my-dictionary
+make -C output/my-dictionary install
 ```
 
-## 限制
+DDK 在隔离的编译目录中运行，再由 `ditto` 加入 `OtherResources`，避免大量资源触发
+命令行参数长度限制。无需手动移动资源或在安装后执行 `rsync`。
 
-- **无音频播放**：Apple Dictionary 不支持 JavaScript 音频
-- **样式简化**：MDict 的复杂 CSS 样式会被移除
-- **大型词典**：处理可能需要几分钟
+## 诊断与限制
 
-## 工作原理
+- `conversion-report.json` 记录词条数、正文保留检查、链接和媒体适配情况、无法解析的
+  源链接、循环跳转及缺失文件。
+- 无法解析的内部链接保留文字，但不可点击；转换器不会补造缺失文章。
+- MP3/WAV 使用原生 HTML 音频控件，其他编码取决于 macOS WebKit，转换器不负责转码。
+- 不执行词典自带脚本；高度依赖交互脚本的词典可能需要专门的适配器。
+- 保留词典原有视觉样式。Dictionary.app 和系统「查询」的显示可能不同，需要分别验收。
+- 牛津词条的正文、音标、例句和说明框使用专门的暗色配色，插图保留原始颜色。
 
-1. **pyglossary** 将 MDX 转换为 AppleDict XML 格式
-2. **BeautifulSoup** 解析并清理每个词条：
-   - 提取：词头、发音、释义、例句
-   - 移除：自定义属性、JavaScript、复杂嵌套
-   - 转义：XML 特殊字符（`&`、`<`、`>`）
-3. 生成简化的 **CSS**，包含关键的 `d|entry { display: block; }`
-4. 创建精简的 **plist**（复杂 plist 可能导致问题）
-5. **DDK** 编译为 `.dictionary` 包
+[OALD 审计报告](docs/oald-native-audit.md) 记录了整库验证，以及原生引擎、WebKit 和
+Dictionary.app 界面验证的边界。
 
-## 常见问题
+## 更新已有安装
 
-### 词典显示词条但内容空白
-
-- 检查 CSS 是否包含 `d|entry { display: block; }`
-- 使用简化版 plist
-- 先尝试编译小型测试词典
-
-### 编译失败提示 "Argument list too long"
-
-- 编译前移走 `OtherResources/` 文件夹
-- 安装后用 `rsync` 添加资源
-
-### 词典不显示
+工具通过源码安装，需要手动更新：
 
 ```bash
-rm -rf ~/Library/Caches/com.apple.Dictionary
-killall Dictionary
-killall DictionaryWorkerService
+git pull --ff-only
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python mdx2apple.py /path/to/dictionary.mdx \
+  --output ./output/my-dictionary-updated \
+  --keep-resources --install
 ```
 
-## 致谢
+在已有 `mdx2apple` 仓库目录中执行。使用新的输出目录，并重新传入此前自定义的
+`--name`、`--short-name`、`--identifier`、`--copyright`、`--publisher` 和 `--credits`。
+拉取代码不会自动更新已安装词典，需要重新转换、安装，再退出并重新打开「词典」。
 
-- [pyglossary](https://github.com/ilius/pyglossary) - 词典格式转换
-- [macddk](https://github.com/ikey4u/macddk) - DDK GitHub 镜像
+卸载时，退出「词典」，将生成的 `.dictionary` 包移出 `~/Library/Dictionaries/`。
+保留旧词典包即可在本地回退。
 
-## 许可证
+## 验证
 
-MIT
+```bash
+python -m unittest discover -s tests -v
+
+python tests/audit_native_dictionary.py \
+  --source /path/to/reference-appledict.xml \
+  --converted output/my-dictionary/dictionary.xml \
+  --dictionary "$HOME/Library/Dictionaries/dictionary.dictionary" \
+  --mdx /path/to/dictionary.mdx \
+  --compare-all \
+  --output output/native-audit/report.json
+```
+
+审计使用未公开的词典选择 API，并检查同一查询下的所有记录，避免将同形词误判为丢失。
+应优先传入 `--mdx` 检查真实源键；已有 SQLite 索引可能含有生成的别名。报告含词典正文，
+应保留在本地，不要发布为测试素材。
+
+`tests/probe_webkit.swift` 可渲染原生引擎导出的 HTML 并验证媒体。可选参数
+`--secondary-display` 仅在存在副屏时显示不抢焦点的测试窗口，音频测试全程静音。
+
+## 致谢与许可证
+
+- [PyGlossary](https://github.com/ilius/pyglossary)：MDX/MDD 格式读取器。
+- [macddk](https://github.com/ikey4u/macddk)：Dictionary Development Kit 镜像。
+
+MIT。词典内容的权利归其各自权利人所有。
