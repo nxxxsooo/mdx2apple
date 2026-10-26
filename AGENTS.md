@@ -19,4 +19,5 @@ Converter tool: MDict .mdx dictionary files → Apple Dictionary format (.dictio
 
 ## Maintenance
 - Preserve the working conversion contract and existing CLI behavior
+- Keep personal fonts and reading-layout presets in per-dictionary overrides; shared converter defaults must stay font-neutral
 - Address compatibility or parsing edge cases when real dictionaries expose them; no speculative feature roadmap

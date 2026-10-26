@@ -94,10 +94,25 @@ resource moves or post-install `rsync` are required.
   macOS WebKit version; the converter does not transcode them.
 - Original dictionary scripts are not executed. Highly interactive dictionaries
   may need additional format-specific adapters.
-- The source's visual styling is retained. Dictionary.app and system Look Up
-  may render differently; native interaction checks remain important.
+- Source styling is imported before the converter's compatibility adaptations.
+  Dictionary.app and system Look Up may render differently; native interaction
+  checks remain important.
 - Oxford entries have an explicit dark palette for text, pronunciation,
   examples and reference boxes. Illustrations retain their original colors.
+
+## Per-dictionary typography
+
+Personal font and reading-layout choices belong in a dictionary-specific override.
+`assets/dictionary.css` is the shared compatibility layer; a preference from one
+dictionary should not become the default for every conversion.
+
+Dictionary.app can skip a user-installed font even when an isolated WebKit preview
+uses it. A tested alternative is a local `@font-face` URL pointing to a font inside
+that dictionary's `OtherResources`, with its license. Preserve Chinese and IPA
+fallbacks and relative font sizes. A computed CSS family name does not prove which
+font rendered the glyphs; verify the actual app or its Accessibility font runs.
+The [OALD audit](docs/oald-native-audit.md#typography-customization-and-native-verification)
+records the native evidence and the current customization split.
 
 ## Update an existing installation
 
@@ -148,6 +163,8 @@ contain dictionary text and should stay outside published fixtures.
 `tests/probe_webkit.swift` renders extracted native HTML and tests media in an
 isolated WebKit instance. Its optional `--secondary-display` mode creates a
 nonactivating window only when a secondary display exists; audio tests are muted.
+Use `--width=480`, `--height=900` and `--font-size=20` to check narrow layouts and
+enlarged text. Its JSON reports computed typography and horizontally clipped text.
 
 ## Credits and license
 

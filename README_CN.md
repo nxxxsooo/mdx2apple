@@ -84,11 +84,24 @@ DDK 在隔离的编译目录中运行，再由 `ditto` 加入 `OtherResources`�
 - 无法解析的内部链接保留文字，但不可点击；转换器不会补造缺失文章。
 - MP3/WAV 使用原生 HTML 音频控件，其他编码取决于 macOS WebKit，转换器不负责转码。
 - 不执行词典自带脚本；高度依赖交互脚本的词典可能需要专门的适配器。
-- 保留词典原有视觉样式。Dictionary.app 和系统「查询」的显示可能不同，需要分别验收。
+- 先导入词典原始样式，再应用转换器的兼容性适配。Dictionary.app 和系统「查询」
+  的显示可能不同，需要分别验收。
 - 牛津词条的正文、音标、例句和说明框使用专门的暗色配色，插图保留原始颜色。
 
 [OALD 审计报告](docs/oald-native-audit.md) 记录了整库验证，以及原生引擎、WebKit 和
 Dictionary.app 界面验证的边界。
+
+## 按词典定制排版
+
+个人字体和阅读排版属于单个词典的覆盖样式。`assets/dictionary.css` 是共享兼容性层，
+不应将某本词典的个人偏好设为所有转换的默认值。
+
+Dictionary.app 可能跳过用户安装的字体，即使独立 WebKit 预览能正确使用它。已经验证
+可行的方式是将字体及许可证放入该词典的 `OtherResources`，通过本地 `@font-face` URL
+加载，并保留中文、音标后备字体和相对字号。CSS 计算出的字体族名称不能证明实际绘制
+字形的字体；应检查原生应用或其辅助功能字体信息。
+[OALD 审计](docs/oald-native-audit.md#typography-customization-and-native-verification)
+记录了原生验证证据和当前定制样式的拆分状态。
 
 ## 更新已有安装
 
@@ -130,6 +143,8 @@ python tests/audit_native_dictionary.py \
 
 `tests/probe_webkit.swift` 可渲染原生引擎导出的 HTML 并验证媒体。可选参数
 `--secondary-display` 仅在存在副屏时显示不抢焦点的测试窗口，音频测试全程静音。
+可用 `--width=480`、`--height=900` 和 `--font-size=20` 检查窄视图与放大字号；
+JSON 结果包含实际排版样式和水平裁切的文本。
 
 ## 致谢与许可证
 

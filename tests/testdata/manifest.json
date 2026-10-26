@@ -1,0 +1,19 @@
+{
+  "fixtures": [
+    {
+      "file": "xindehan-edge-cases.json",
+      "covers": "新德汉 corpus shapes: literal angle-bracket grammar/usage notes (post-repair &lt; form), JS restyling remnants, inflection redirects",
+      "source": "synthetic; structures inspired by materials/20260524, all text written for this fixture"
+    },
+    {
+      "file": "bilingual-edge-cases.json",
+      "covers": "Duden/Langenscheidt corpus shapes: Chinese reverse keys via @@@LINK, verbatim trailer preservation (footer stripping is local prepare's job, not the converter's), unresolved entry:// labels, literal usage notes",
+      "source": "synthetic; structures inspired by materials/20260901, all text written for this fixture"
+    }
+  ],
+  "notes": [
+    "Bodies use the post-repair form (&lt; for literal angle brackets). The LITERAL_ANGLE repair lives in per-dictionary local prepare scripts (.local/, ignored), not in the shared converter.",
+    "The converter contract under test: preserve all entry text verbatim, drop scripts/handlers, adapt entry:// links, resolve @@@LINK chains. It must not invent or delete dictionary text.",
+    "Real MDX corpora stay in materials/ (git-ignored) and are never published here."
+  ]
+}

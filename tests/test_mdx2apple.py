@@ -1,3 +1,4 @@
+import json
 import plistlib
 import subprocess
 import tempfile
@@ -148,6 +149,47 @@ class Mdx2AppleTests(unittest.TestCase):
             ['make', 'DICT_BUILD_TOOL_DIR=/path with spaces/DDK', 'install'],
             cwd=Path('/output path'), capture_output=True, text=True,
         )
+
+
+class TestdataFixtures(unittest.TestCase):
+    """Synthetic regression fixtures for real-dictionary shapes.
+
+    Fixture text is written for the tests; only common headwords and
+    structural patterns come from the real corpora in materials/
+    (git-ignored, never published). Bodies use the post-repair form:
+    literal angle brackets arrive as &lt;, because the LITERAL_ANGLE
+    repair lives in per-dictionary local prepare scripts, not in the
+    shared converter.
+    """
+    DATA = Path(__file__).resolve().parent / "testdata"
+
+    def render_file(self, name):
+        cases = json.loads((self.DATA / name).read_text(encoding="utf-8"))
+        records = [(case["key"], case["body"]) for case in cases]
+        catalog = m.Catalog(records)
+        adapter = m.EntryAdapter(catalog, "com.example.testdata")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "dictionary.xml"
+            m.write_entries(iter(records), catalog, adapter, path)
+            data = path.read_bytes()
+        return cases, etree.fromstring(data), adapter, data.decode("utf-8")
+
+    def check(self, name):
+        cases, root, adapter, serial = self.render_file(name)
+        searchable = "".join(root.itertext()) + "\n" + serial
+        for case in cases:
+            for needle in case.get("must_contain", []):
+                self.assertIn(needle, searchable, f"{name}:{case['id']}")
+            for needle in case.get("must_not_contain", []):
+                self.assertNotIn(needle, serial, f"{name}:{case['id']}")
+            for link in case.get("expect_unresolved", []):
+                self.assertIn(link, adapter.unresolved_links, f"{name}:{case['id']}")
+
+    def test_xindehan_edge_cases(self):
+        self.check("xindehan-edge-cases.json")
+
+    def test_bilingual_edge_cases(self):
+        self.check("bilingual-edge-cases.json")
 
 
 if __name__ == '__main__':

@@ -6,8 +6,13 @@ __pycache__/
 venv/
 env/
 
+# Local dictionary sources (licensed/community corpora stay on this machine)
+materials/
+sources.json
+
 # Build output
 output/
+.local/
 objects/
 *.dictionary/
 

@@ -1,0 +1,31 @@
+[
+  {
+    "id": "chinese-reverse-key",
+    "key": "合成示例词",
+    "body": "@@@LINK=Hausbeispiel",
+    "must_contain": ["Hausbeispiel", "合成示例词", "synthetic Haus definition"],
+    "must_not_contain": []
+  },
+  {
+    "id": "german-entry-with-trailer",
+    "key": "Hausbeispiel",
+    "body": "<p><font color=\"#003472\">synthetic Haus definition</font> <font color=\"grey\">合成示例翻译</font>【合成示例页脚·转换器应原样保留，去除是本地 prepare 的工作】</p>",
+    "must_contain": ["synthetic Haus definition", "合成示例翻译", "合成示例页脚"],
+    "must_not_contain": ["<script"]
+  },
+  {
+    "id": "unresolved-reference-keeps-label",
+    "key": "Gehbeispiel",
+    "body": "<p>synthetic Gehen definition <a href=\"entry://synthetic-missing-target\">keep this label</a></p>",
+    "must_contain": ["synthetic Gehen definition", "keep this label"],
+    "must_not_contain": ["<script"],
+    "expect_unresolved": ["entry://synthetic-missing-target"]
+  },
+  {
+    "id": "literal-usage-note",
+    "key": "Laufbeispiel",
+    "body": "<p><i>synthetic usage</i> &lt;umg.&gt; synthetic Lauf definition <a href=\"entry://Hausbeispiel\">Hausbeispiel</a></p>",
+    "must_contain": ["<umg.>", "synthetic Lauf definition"],
+    "must_not_contain": []
+  }
+]

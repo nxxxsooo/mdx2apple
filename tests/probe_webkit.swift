@@ -1,5 +1,6 @@
 // Headless rendering/media probe for HTML returned by DictionaryServices.
-// swift tests/probe_webkit.swift entry.html output-prefix resource-root [dark|light] [--skip-media]
+// swift tests/probe_webkit.swift entry.html output-prefix resource-root [dark|light]
+//   [--skip-media] [--width=480] [--height=900] [--font-size=20]
 import AppKit
 import WebKit
 
@@ -13,10 +14,20 @@ if CommandLine.arguments.contains("dark") {
 let input = URL(fileURLWithPath: CommandLine.arguments[1]).standardizedFileURL
 let output = URL(fileURLWithPath: CommandLine.arguments[2]).standardizedFileURL
 let access = URL(fileURLWithPath: CommandLine.arguments[3]).standardizedFileURL
+func numericOption(_ name: String, default value: Double) -> Double {
+    guard let argument = CommandLine.arguments.first(where: { $0.hasPrefix(name + "=") }) else { return value }
+    guard let number = Double(argument.dropFirst(name.count + 1)), number.isFinite, number > 0 else {
+        fputs("Invalid \(name)\n", stderr); exit(1)
+    }
+    return number
+}
+let viewportWidth = numericOption("--width", default: 1100)
+let viewportHeight = numericOption("--height", default: 900)
+let fontSize = numericOption("--font-size", default: 16)
 let config = WKWebViewConfiguration()
 config.websiteDataStore = .nonPersistent()
 config.mediaTypesRequiringUserActionForPlayback = []
-let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 1100, height: 900), configuration: config)
+let view = WKWebView(frame: NSRect(x: 0, y: 0, width: viewportWidth, height: viewportHeight), configuration: config)
 var panel: NSPanel?
 if CommandLine.arguments.contains("--secondary-display") {
     guard let screen = NSScreen.screens.dropFirst().first else {
@@ -25,8 +36,8 @@ if CommandLine.arguments.contains("--secondary-display") {
     }
     app.setActivationPolicy(.accessory)
     let frame = NSRect(x: screen.visibleFrame.minX + 40, y: screen.visibleFrame.minY + 40,
-                       width: min(1100, screen.visibleFrame.width - 80),
-                       height: min(900, screen.visibleFrame.height - 80))
+                       width: min(viewportWidth, screen.visibleFrame.width - 80),
+                       height: min(viewportHeight, screen.visibleFrame.height - 80))
     panel = NSPanel(contentRect: frame, styleMask: [.titled, .nonactivatingPanel], backing: .buffered, defer: false)
     panel!.title = "Dictionary rendering test"
     panel!.contentView = view
@@ -37,6 +48,8 @@ if CommandLine.arguments.contains("--secondary-display") {
 class Probe: NSObject, WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         webView.callAsyncJavaScript("""
+        document.documentElement.style.fontSize = fontSize + 'px';
+        await document.fonts.ready;
         const results = [];
         for (const audio of (testMedia ? Array.from(document.querySelectorAll('audio')).slice(0, 2) : [])) {
           audio.muted = true;
@@ -86,6 +99,7 @@ class Probe: NSObject, WKNavigationDelegate {
           return layers.reduce((rgb, layer) => rgb.map((v, i) => layer[i] * layer[3] + v * (1 - layer[3])), [255, 255, 255]);
         }
         const failures = [];
+        const clippedText = [];
         let measured = 0, minimumContrast = Infinity;
         const walker = document.createTreeWalker(document.querySelector('.mdx-entry') || document.body, NodeFilter.SHOW_TEXT);
         while (walker.nextNode()) {
@@ -97,7 +111,11 @@ class Probe: NSObject, WKNavigationDelegate {
           if (style.visibility !== 'visible' || style.opacity === '0') continue;
           const range = document.createRange();
           range.selectNode(node);
-          if (!Array.from(range.getClientRects()).some(r => r.width && r.height)) continue;
+          const rects = Array.from(range.getClientRects()).filter(r => r.width && r.height);
+          if (!rects.length) continue;
+          if (rects.some(r => r.left < -1 || r.right > document.documentElement.clientWidth + 1)) {
+            clippedText.push(node.textContent.trim().slice(0, 60));
+          }
           const paint = style.webkitTextFillColor || style.color;
           const bg = background(element), fg = rgba(paint);
           const color = fg.slice(0, 3).map((v, i) => v * fg[3] + bg[i] * (1 - fg[3]));
@@ -112,8 +130,10 @@ class Probe: NSObject, WKNavigationDelegate {
           text: document.body.innerText,
           dark: matchMedia('(prefers-color-scheme: dark)').matches,
           visibility: document.visibilityState,
+          viewportWidth: document.documentElement.clientWidth,
           width: document.documentElement.scrollWidth,
           height: document.documentElement.scrollHeight,
+          clippedText,
           images: Array.from(document.images, i => ({src: i.getAttribute('src'), width: i.naturalWidth, height: i.naturalHeight})),
           definitions: document.querySelectorAll('.def').length,
           visibleDefinitions: Array.from(document.querySelectorAll('.def')).filter(e => e.getBoundingClientRect().height > 0).length,
@@ -123,9 +143,15 @@ class Probe: NSObject, WKNavigationDelegate {
           audioCount: document.querySelectorAll('audio').length,
           audio: results,
           expansion,
+          typography: Object.fromEntries(['.mdx-entry', '.headword', '.phon', '.def', '.examples .x', '.examples chn', '.box_title'].map(selector => {
+            const element = document.querySelector(selector);
+            if (!element) return [selector, null];
+            const style = getComputedStyle(element);
+            return [selector, {family: style.fontFamily, size: style.fontSize, weight: style.fontWeight, lineHeight: style.lineHeight}];
+          })),
           contrast: {measured, minimum: minimumContrast, failureCount: failures.length, failures: failures.slice(0, 30)}
         });
-        """, arguments: ["testMedia": !CommandLine.arguments.contains("--skip-media")], in: nil, in: .page) { result in
+        """, arguments: ["testMedia": !CommandLine.arguments.contains("--skip-media"), "fontSize": fontSize], in: nil, in: .page) { result in
             switch result {
             case .failure(let error):
                 fputs("Probe error: \(error)\n", stderr); exit(1)

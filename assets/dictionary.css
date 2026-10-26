@@ -108,7 +108,7 @@ d|entry { display: block; }
         background-color: var(--dict-surface) !important;
         border-color: var(--dict-note-border) !important;
     }
-    .mdx-entry .oald :is(.box_title, summary, .ui-grad dt):hover {
+    .mdx-entry .oald :is(summary, .ui-grad dt):hover {
         background-color: var(--dict-hover) !important;
     }
     .mdx-entry .oald :is(.idioms, .phrasal_verb_links, .jumplink, jumplink, .shcut) {

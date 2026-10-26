@@ -1,0 +1,30 @@
+[
+  {
+    "id": "literal-grammar-note",
+    "key": "Beispielwort",
+    "body": "<p><font color=\"#df0101\">Substantiv</font> derivative &lt;Int.&gt; synthetic definition one</p>",
+    "must_contain": ["<Int.>", "synthetic definition one"],
+    "must_not_contain": ["<script"]
+  },
+  {
+    "id": "unclosed-usage-note",
+    "key": "Musterhaus",
+    "body": "<p><font color=\"#0044bb\">synthetic definition two</font> usage &lt;Fotografie synthetic usage note</p>",
+    "must_contain": ["<Fotografie", "synthetic usage note"],
+    "must_not_contain": ["<script"]
+  },
+  {
+    "id": "script-remnants-dropped",
+    "key": "Probewort",
+    "body": "<p><script>restyle();</script>synthetic definition three <font color=\"#398f69\">synthetic example</font></p>",
+    "must_contain": ["synthetic definition three", "synthetic example"],
+    "must_not_contain": ["restyle", "<script", "onclick"]
+  },
+  {
+    "id": "redirect-chain",
+    "key": "Probeworte",
+    "body": "@@@LINK=Probewort",
+    "must_contain": ["Probeworte", "synthetic definition three"],
+    "must_not_contain": []
+  }
+]
