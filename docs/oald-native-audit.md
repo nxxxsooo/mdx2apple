@@ -22,7 +22,8 @@ entry text and generated bundles are not distributed with this report.
 Text comparisons ignore whitespace only and inspect every matching native record
 so that homographs are not mistaken for missing entries. The adapter separately
 checks that each body's text remains unchanged while it adapts links and media,
-after removing source scripts and styles. All 15 regression tests pass.
+after removing source scripts and styles. All 15 regression tests passed at the
+time; the suite now has 18.
 
 These are corpus-specific results, not a guarantee for every MDX dictionary.
 
@@ -155,6 +156,19 @@ The source references 35 audio files absent from its MDD. It also contains
 articles not included in the source. Their text is retained without a broken
 click target. A self-referential `resume` alias is reported while its actual
 entries remain searchable.
+
+### All-tab media fix (2026-10-28)
+
+The user reported silent pronunciation buttons in Dictionary.app's **All** tab
+only. That page uses `file:///System/Applications/Dictionary.app/Contents/Resources/`
+as its base, so relative `src` values resolve into the app bundle. A three-variant
+probe dictionary confirmed it: in the All tab the relative player read "Error" and
+its image was missing, while absolute `dict-resource://` and `data:` URIs loaded.
+All three worked in the dictionary's own tab. OALD's 44 px button hid the error
+label. The converter now writes absolute `dict-resource://` URLs for the installed
+bundle path; `data:` URIs were rejected because they would inline about 2.2 GB of
+MP3 audio. Verification reads player states through Accessibility without
+clicking or moving the pointer.
 
 Dictionary.app's own playback policy, every possible click path, and system
 Look Up have not been exhaustively automated. WebKit playback is useful evidence

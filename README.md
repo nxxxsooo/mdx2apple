@@ -67,6 +67,7 @@ installation does not automatically change your selected dictionaries.
 | `--output`, `-o` | Fresh output directory; defaults to `./output` |
 | `--identifier` | Unique bundle ID, such as `com.example.dictionary` |
 | `--keep-resources` | Include images, audio and other archive resources |
+| `--resource-url` | Base URL for entry media; defaults to the installed bundle's `dict-resource://` URL |
 | `--install` | Build and install into `~/Library/Dictionaries/` |
 
 CSS and fonts are kept even without `--keep-resources`; use the flag for a
@@ -92,6 +93,12 @@ resource moves or post-install `rsync` are required.
   non-clickable. The converter does not invent missing dictionary articles.
 - MP3/WAV playback uses native HTML audio controls. Other codecs depend on the
   macOS WebKit version; the converter does not transcode them.
+- Dictionary.app's **All** tab resolves relative paths against its own app bundle,
+  so audio shows "Error" and images vanish there. Entry media therefore point to
+  the absolute `dict-resource://` URL of the installed bundle
+  (`~/Library/Containers/com.apple.Dictionary/Data/Library/Dictionaries/<Name>.dictionary`).
+  Install the bundle under its generated name; to keep relative paths for a
+  bundle installed elsewhere, pass `--resource-url ""`.
 - Original dictionary scripts are not executed. Highly interactive dictionaries
   may need additional format-specific adapters.
 - Source styling is imported before the converter's compatibility adaptations.

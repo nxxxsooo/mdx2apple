@@ -62,6 +62,7 @@ python mdx2apple.py /path/to/dictionary.mdx \
 | `--output`、`-o` | 新的输出目录，默认 `./output` |
 | `--identifier` | 唯一 Bundle ID，例如 `com.example.dictionary` |
 | `--keep-resources` | 包含图片、音频及其他资源包文件 |
+| `--resource-url` | 词条媒体的基础 URL，默认为已安装词典包的 `dict-resource://` 地址 |
 | `--install` | 编译并安装到 `~/Library/Dictionaries/` |
 
 不传 `--keep-resources` 时仍会保留 CSS 和字体；需要完整媒体功能时应传入该参数。
@@ -83,6 +84,10 @@ DDK 在隔离的编译目录中运行，再由 `ditto` 加入 `OtherResources`�
   源链接、循环跳转及缺失文件。
 - 无法解析的内部链接保留文字，但不可点击；转换器不会补造缺失文章。
 - MP3/WAV 使用原生 HTML 音频控件，其他编码取决于 macOS WebKit，转换器不负责转码。
+- 「词典」的「全部」标签页会按应用自身目录解析相对路径，导致音频显示 Error、图片
+  缺失。因此词条媒体使用已安装词典包的绝对 `dict-resource://` 地址
+  （`~/Library/Containers/com.apple.Dictionary/Data/Library/Dictionaries/<名称>.dictionary`）。
+  请按生成的名称安装；若词典包安装在其他位置，可传入 `--resource-url ""` 改回相对路径。
 - 不执行词典自带脚本；高度依赖交互脚本的词典可能需要专门的适配器。
 - 先导入词典原始样式，再应用转换器的兼容性适配。Dictionary.app 和系统「查询」
   的显示可能不同，需要分别验收。

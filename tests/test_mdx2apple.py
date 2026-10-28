@@ -98,6 +98,18 @@ class Mdx2AppleTests(unittest.TestCase):
         self.assertEqual(adapter.unresolved_links, {'entry://absent'})
         self.assertEqual(adapter.stylesheets, {'style.css'})
 
+    def test_media_use_absolute_resource_url_for_all_results_view(self):
+        records = [('word', '<a href="sound://a b.mp3"> </a><img src="pic.png">')]
+        catalog = m.Catalog(records)
+        base = m.installed_resource_url("My_Dict")
+        self.assertTrue(base.startswith("dict-resource:///"))
+        self.assertTrue(base.endswith("/Dictionaries/My_Dict.dictionary/Contents/Resources/"))
+        adapter = m.EntryAdapter(catalog, "com.example.test", base)
+        root = adapter.adapt(records[0][1], "entry000001")
+        self.assertEqual(root.find('.//audio').get('src'), base + 'a%20b.mp3')
+        self.assertEqual(root.find('.//img').get('src'), base + 'pic.png')
+        self.assertEqual(adapter.resources, {'a b.mp3', 'pic.png'})
+
     def test_website_reference_uses_known_homograph_anchor(self):
         records = [('bank', '<div id="bank_1">noun</div><div id="bank_2">verb</div>'),
                    ('word', '<a href="entry:///definition/english/bank2">bank</a>')]

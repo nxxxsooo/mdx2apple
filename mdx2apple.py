@@ -189,10 +189,18 @@ class Catalog:
         return None
 
 
+def installed_resource_url(base_name):
+    """Dictionary.app's All view resolves relative media against its own bundle."""
+    root = (Path.home() / "Library/Containers/com.apple.Dictionary/Data/Library/Dictionaries"
+            / f"{base_name}.dictionary/Contents/Resources")
+    return "dict-resource://" + quote(str(root), safe="/") + "/"
+
+
 class EntryAdapter:
-    def __init__(self, catalog, identifier):
+    def __init__(self, catalog, identifier, resource_url=""):
         self.catalog = catalog
         self.identifier = identifier
+        self.resource_url = resource_url
         self.stylesheets = set()
         self.inline_styles = set()
         self.resources = set()
@@ -224,7 +232,7 @@ class EntryAdapter:
             if node.get("src") and (not urlsplit(node.get("src")).scheme
                                     or node.get("src").startswith("file://")):
                 name = resource_name(node.get("src"))
-                node.set("src", quote(name, safe="/"))
+                node.set("src", self.resource_url + quote(name, safe="/"))
                 self.resources.add(name)
             if node.tag == "img":
                 self.counts["images"] += 1
@@ -241,7 +249,7 @@ class EntryAdapter:
                          "US pronunciation" if "pron-us" in classes else "Pronunciation")
                 node.tag = "audio"
                 node.attrib.clear()
-                node.set("src", quote(name, safe="/"))
+                node.set("src", self.resource_url + quote(name, safe="/"))
                 node.set("controls", "controls")
                 node.set("preload", "none")
                 node.set("class", "mdx-audio")
@@ -421,10 +429,10 @@ clean:
 ''', encoding="utf-8")
 
 
-def convert_mdx(mdx_path, output_dir, identifier, keep_resources=False):
+def convert_mdx(mdx_path, output_dir, identifier, keep_resources=False, resource_url=""):
     print("Indexing original MDX records and aliases...", flush=True)
     catalog = Catalog(mdx_records(mdx_path))
-    adapter = EntryAdapter(catalog, identifier)
+    adapter = EntryAdapter(catalog, identifier, resource_url)
     base_name = bundle_name(mdx_path)
     xml_path = output_dir / f"{base_name}.xml"
     count = write_entries(mdx_records(mdx_path), catalog, adapter, xml_path)
@@ -445,6 +453,7 @@ def convert_mdx(mdx_path, output_dir, identifier, keep_resources=False):
         "unresolved_links": sorted(adapter.unresolved_links),
         "redirect_diagnostics": {key: sorted(values) for key, values in catalog.diagnostics.items()},
         "resources_included": keep_resources,
+        "resource_url": resource_url,
         "resources_written": len(saved),
         "missing_resources": sorted(adapter.resources - saved) if keep_resources else [],
     }
@@ -479,6 +488,8 @@ def main():
     parser.add_argument("--identifier", help="Bundle identifier (e.g., com.example.dict)")
     parser.add_argument("--install", action="store_true", help="Build and install after conversion")
     parser.add_argument("--keep-resources", action="store_true", help="Include audio/image resources")
+    parser.add_argument("--resource-url", help="Base URL for entry media (default: the installed bundle's "
+                        "dict-resource:// URL; pass an empty string for relative paths)")
     args = parser.parse_args()
     try:
         mdx_path = Path(args.input).expanduser().resolve(strict=True)
@@ -491,7 +502,9 @@ def main():
         identifier = args.identifier or f"com.mdx2apple.{base_name.lower().replace('_', '-')}"
         if not re.fullmatch(r"[A-Za-z0-9.-]+", identifier):
             raise ValueError("Bundle identifier must contain only ASCII letters, digits, dots or hyphens")
-        convert_mdx(mdx_path, output_dir, identifier, args.keep_resources)
+        resource_url = (installed_resource_url(base_name) if args.resource_url is None
+                        else args.resource_url)
+        convert_mdx(mdx_path, output_dir, identifier, args.keep_resources, resource_url)
         create_plist(
             output_dir / f"{base_name}.plist", args.name or mdx_path.stem, identifier,
             args.copyright, short_name=args.short_name, publisher=args.publisher,
